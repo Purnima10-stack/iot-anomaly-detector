@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>IoT Anomaly Detector</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; background: #0f1117; color: #fff; padding: 20px; }
+    h1 { color: #00d4ff; margin-bottom: 5px; }
+    p.subtitle { color: #888; margin-bottom: 20px; font-size: 0.9em; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .metric-card {
+      background: #1a1a2e;
+      padding: 15px;
+      border-radius: 8px;
+      text-align: center;
+      border: 1px solid #2a2a4a;
+    }
+    .metric-value { font-size: 1.8em; font-weight: bold; color: #00d4ff; }
+    .metric-label { font-size: 0.85em; color: #888; margin-top: 5px; }
+
+    .status-box {
+      padding: 15px 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 1.1em;
+      font-weight: bold;
+    }
+    .normal  { background: #0d2b0d; border: 1px solid #00cc00; color: #00ff00; }
+    .anomaly { background: #2b0d0d; border: 1px solid #cc0000; color: #ff4444; }
+    .waiting { background: #1a1a2e; border: 1px solid #555; color: #888; }
+
+    .chart-box {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border: 1px solid #2a2a4a;
+    }
+
+    .buttons { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    button {
+      padding: 10px 22px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.95em;
+      font-weight: bold;
+    }
+    .btn-normal  { background: #00d4ff; color: #000; }
+    .btn-anomaly { background: #ff4444; color: #fff; }
+    .btn-auto    { background: #9b59b6; color: #fff; }
+    .btn-stop    { background: #555; color: #fff; }
+
+    .log-box {
+      background: #1a1a2e;
+      border-radius: 8px;
+      padding: 15px;
+      border: 1px solid #2a2a4a;
+      max-height: 180px;
+      overflow-y: auto;
+      font-size: 0.82em;
+      font-family: monospace;
+    }
+    .log-normal  { color: #00ff00; }
+    .log-anomaly { color: #ff4444; }
+  </style>
+</head>
+<body>
+
+<h1>🔧 IoT Anomaly Detector</h1>
+<p class="subtitle">Real-time anomaly detection on NASA Turbofan Engine sensor data — Powered by Isolation Forest</p>
+
+<!-- Model Metrics -->
+<div class="metrics" id="metrics">
+  <div class="metric-card"><div class="metric-value">—</div><div class="metric-label">Precision</div></div>
+  <div class="metric-card"><div class="metric-value">—</div><div class="metric-label">Recall</div></div>
+  <div class="metric-card"><div class="metric-value">—</div><div class="metric-label">F1 Score</div></div>
+  <div class="metric-card"><div class="metric-value">—</div><div class="metric-label">Accuracy</div></div>
+</div>
+
+<!-- Status -->
+<div id="status-box" class="status-box waiting">
+  ⏳ Awaiting sensor reading...
+</div>
+
+<!-- Chart -->
+<div class="chart-box">
+  <canvas id="anomalyChart" height="80"></canvas>
+</div>
+
+<!-- Buttons -->
+<div class="buttons">
+  <button class="btn-normal"  onclick="simulateNormal()">✅ Simulate Normal Reading</button>
+  <button class="btn-anomaly" onclick="simulateAnomaly()">🚨 Simulate Anomaly</button>
+  <button class="btn-auto"    onclick="startAuto()" id="autoBtn">▶ Auto Simulate</button>
+  <button class="btn-stop"    onclick="stopAuto()">⏹ Stop</button>
+</div>
+
+<!-- Log -->
+<div class="log-box" id="log"></div>
+
+<script>
+  const API = 'http://localhost:5000';
+  const labels = [];
+  const scoreData = [];
+  const pointColors = [];
+  let tick = 0;
+  let autoTimer = null;
+
+  // Load model metrics
+  fetch(`${API}/metrics`)
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('metrics').innerHTML = `
+        <div class="metric-card">
+          <div class="metric-value">${data.precision}</div>
+          <div class="metric-label">Precision</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${data.recall}</div>
+          <div class="metric-label">Recall</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${data.f1_score}</div>
+          <div class="metric-label">F1 Score</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value">${data.accuracy}</div>
+          <div class="metric-label">Accuracy</div>
+        </div>
+      `;
+    })
+    .catch(() => console.log('Could not load metrics'));
+
+  // Chart
+  const ctx = document.getElementById('anomalyChart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Anomaly Score (lower = more anomalous)',
+        data: scoreData,
+        borderColor: '#00d4ff',
+        borderWidth: 2,
+        pointBackgroundColor: pointColors,
+        pointRadius: 6,
+        fill: false,
+        tension: 0.3
+      }]
+    },
+    options: {
+      animation: false,
+      plugins: {
+        legend: { labels: { color: '#aaa' } }
+      },
+      scales: {
+        y: {
+          ticks: { color: '#aaa' },
+          grid: { color: '#2a2a4a' },
+          title: { display: true, text: 'Anomaly Score', color: '#aaa' }
+        },
+        x: {
+          ticks: { color: '#aaa' },
+          grid: { color: '#2a2a4a' },
+          title: { display: true, text: 'Reading', color: '#aaa' }
+        }
+      }
+    }
+  });
+
+  function sendReading(sensors) {
+    fetch(`${API}/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sensors })
+    })
+    .then(r => r.json())
+    .then(result => {
+      tick++;
+
+      // Update chart
+      labels.push(`T${tick}`);
+      scoreData.push(result.anomaly_score);
+      pointColors.push(result.is_anomaly ? '#ff4444' : '#00ff00');
+      if (labels.length > 25) {
+        labels.shift(); scoreData.shift(); pointColors.shift();
+      }
+      chart.update();
+
+      // Update status
+      const box = document.getElementById('status-box');
+      if (result.is_anomaly) {
+        box.className = 'status-box anomaly';
+        box.innerHTML = `🚨 ANOMALY DETECTED — Score: ${result.anomaly_score} | Confidence: ${result.confidence}`;
+      } else {
+        box.className = 'status-box normal';
+        box.innerHTML = `✅ Normal Operation — Score: ${result.anomaly_score} | Confidence: ${result.confidence}`;
+      }
+
+      // Log
+      const log = document.getElementById('log');
+      const time = new Date().toLocaleTimeString();
+      const cls = result.is_anomaly ? 'log-anomaly' : 'log-normal';
+      log.innerHTML = `<div class="${cls}">[${time}] T${tick} → ${result.status} | Score: ${result.anomaly_score}</div>` + log.innerHTML;
+    })
+    .catch(e => console.error('API error:', e));
+  }
+
+  function simulateNormal() {
+    // Normal sensor values — close to mean
+    const sensors = Array.from({length: 19}, () => (Math.random() - 0.5) * 0.5);
+    sendReading(sensors);
+  }
+
+  function simulateAnomaly() {
+    // Anomalous — extreme values
+    const sensors = Array.from({length: 19}, () => (Math.random() * 6) + 4);
+    sendReading(sensors);
+  }
+
+  function startAuto() {
+    if (autoTimer) return;
+    document.getElementById('autoBtn').textContent = '▶ Running...';
+    autoTimer = setInterval(() => {
+      // 20% chance of anomaly
+      if (Math.random() < 0.2) simulateAnomaly();
+      else simulateNormal();
+    }, 1500);
+  }
+
+  function stopAuto() {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    document.getElementById('autoBtn').textContent = '▶ Auto Simulate';
+  }
+</script>
+</body>
+</html>

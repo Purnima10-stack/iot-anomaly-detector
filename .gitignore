@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+models/scaler.pkl
+models/anomaly_model.pkl
